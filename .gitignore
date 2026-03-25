@@ -1,0 +1,8 @@
+.env
+venv/
+__pycache__/
+*.pyc
+*.pyo
+ob_bot_log.txt
+ob_bot_trades.csv
+.idea/
