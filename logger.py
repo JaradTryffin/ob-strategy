@@ -18,7 +18,7 @@ TRADE_HEADERS = [
 def log_message(msg: str):
     timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     line      = f"[{timestamp} UTC] {msg}"
-    print(line)
+    print(line, flush=True)
     with open(LOG_FILE, 'a') as f:
         f.write(line + '\n')
 
