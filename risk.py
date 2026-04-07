@@ -53,7 +53,8 @@ class RiskManager:
         raw_qty   = risk_usd / sl_dist
         # Round down to nearest step
         qty       = max(min_qty, (raw_qty // qty_step) * qty_step)
-        # Cap so notional value never exceeds account balance (1x leverage constraint)
-        max_qty   = (account_balance / entry // qty_step) * qty_step
+        # Cap so notional value never exceeds 95% of account balance
+        # (leaves buffer for Binance fees + maintenance margin at 1x leverage)
+        max_qty   = (account_balance * 0.95 / entry // qty_step) * qty_step
         qty       = min(qty, max_qty)
         return round(qty, 3)
