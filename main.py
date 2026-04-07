@@ -118,7 +118,7 @@ def run():
 
                 ob = triggered_obs[0]   # take first valid OB
 
-                direction = ob['dir']
+                direction = 'long' if ob['dir'] == 'bull' else 'short'
                 entry     = ob['ob_high'] if direction == 'long' else ob['ob_low']
                 sl_buffer = atr * SL_BUFFER_MULT
                 sl        = (ob['wick_low']  - sl_buffer if direction == 'long'
