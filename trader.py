@@ -57,6 +57,7 @@ def attach_sl_tp(client: UMFutures, direction: str, sl: float, tp: float,
             stopPrice   = round(sl, 2),
             quantity    = quantity,
             reduceOnly  = 'true',
+            workingType = 'MARK_PRICE',
         )
         client.new_order(
             symbol      = SYMBOL,
@@ -65,6 +66,7 @@ def attach_sl_tp(client: UMFutures, direction: str, sl: float, tp: float,
             stopPrice   = round(tp, 2),
             quantity    = quantity,
             reduceOnly  = 'true',
+            workingType = 'MARK_PRICE',
         )
         log_message(f"[SL/TP] Attached — SL: {sl:.2f} | TP: {tp:.2f}")
     except ClientError as e:
@@ -147,12 +149,13 @@ def _replace_sl(client: UMFutures, direction: str, new_sl: float, position: dict
 
         # Place new SL
         client.new_order(
-            symbol     = SYMBOL,
-            side       = close_side,
-            type       = 'STOP_MARKET',
-            stopPrice  = round(new_sl, 2),
-            quantity   = position['quantity'],
-            reduceOnly = 'true',
+            symbol      = SYMBOL,
+            side        = close_side,
+            type        = 'STOP_MARKET',
+            stopPrice   = round(new_sl, 2),
+            quantity    = position['quantity'],
+            reduceOnly  = 'true',
+            workingType = 'MARK_PRICE',
         )
     except ClientError as e:
         log_message(f"[ERROR] Failed to replace SL: {e}")
