@@ -95,15 +95,19 @@ def place_pending(client, ob: dict, atr: float, balance: float, risk_mgr,
     return False
 
 
-def get_open_order_ids(client) -> set:
-    """Return set of orderId ints currently open on Binance for SYMBOL."""
+def get_open_orders(client) -> list:
+    """Return all open orders for SYMBOL."""
     from binance.error import ClientError
     try:
-        orders = client.get_orders(symbol=SYMBOL)
-        return {o['orderId'] for o in orders if o['status'] == 'NEW'}
+        return [o for o in client.get_orders(symbol=SYMBOL) if o['status'] == 'NEW']
     except ClientError as e:
         log_message(f"[WARN] Could not fetch open orders: {e}")
-        return set()
+        return []
+
+
+def get_open_order_ids(client) -> set:
+    """Return set of orderId ints currently open on Binance for SYMBOL."""
+    return {o['orderId'] for o in get_open_orders(client)}
 
 
 def run():
@@ -142,8 +146,48 @@ def run():
             place_pending(client, ob, last_row['atr'], balance, risk_mgr,
                           existing_order_ids, pending_orders, warmup_price)
 
-    # Active position tracked locally for BE/trail management
+    # ── Orphan recovery — position open but no local tracking ─────
+    # Handles the case where the bot restarted while a position was live.
+    # If there's an open position with no SL/TP orders, attach them now.
     local_position = None
+    startup_pos    = get_open_position(client)
+
+    if startup_pos is not None:
+        direction = startup_pos['side']
+        entry     = float(startup_pos['entry_price'])
+        quantity  = float(startup_pos['size'])
+        open_ords = get_open_orders(client)
+        has_sl    = any(o['type'] == 'STOP_MARKET'       for o in open_ords)
+        has_tp    = any(o['type'] == 'TAKE_PROFIT_MARKET' for o in open_ords)
+
+        if not has_sl or not has_tp:
+            sl_dist = last_row['atr'] * 1.5
+            sl = (entry - sl_dist if direction == 'long' else entry + sl_dist)
+            tp = (entry + sl_dist * RR_RATIO if direction == 'long'
+                  else entry - sl_dist * RR_RATIO)
+            log_message(f"  [RECOVER] Orphaned {direction.upper()} position @ {entry:.2f} "
+                        f"— attaching SL: {sl:.2f} | TP: {tp:.2f}")
+            attach_sl_tp(client, direction, sl, tp, quantity)
+        else:
+            # SL/TP already there — read them from open orders
+            sl = next((float(o['stopPrice']) for o in open_ords
+                       if o['type'] == 'STOP_MARKET'), entry)
+            tp = next((float(o['stopPrice']) for o in open_ords
+                       if o['type'] == 'TAKE_PROFIT_MARKET'), entry)
+            log_message(f"  [RECOVER] Orphaned {direction.upper()} position @ {entry:.2f} "
+                        f"— SL/TP already present, resuming management")
+
+        sl_dist = abs(entry - sl)
+        local_position = {
+            'dir'        : direction,
+            'entry'      : entry,
+            'sl'         : sl,
+            'tp'         : tp,
+            'sl_dist'    : sl_dist,
+            'quantity'   : quantity,
+            'be'         : False,
+            'entry_time' : '',
+        }
 
     while True:
         try:
