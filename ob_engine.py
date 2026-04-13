@@ -3,6 +3,7 @@
 #  Mirrors the backtest logic exactly
 # ═══════════════════════════════════════════════════════════════
 
+from __future__ import annotations
 import pandas as pd
 from config import SWING_LOOKBACK, OB_MAX_AGE, OB_LOOKBACK, MIN_OB_BODY_MULT
 
@@ -57,17 +58,24 @@ class OBEngine:
         for i in range(n * 2 + 10, len(df) - 1):
             self._process_bar(df, i)
 
-    def update(self, df: pd.DataFrame) -> list[dict]:
+    def update(self, df: pd.DataFrame) -> tuple[list[dict], list[dict]]:
         """
-        Process the latest closed bar and return OBs being touched.
+        Process the latest closed bar.
+        Returns (triggered_obs, new_obs):
+          triggered_obs — OBs whose zone price is currently touching
+          new_obs       — OBs freshly created this bar (BOS just confirmed)
         Call once per candle close in the main loop.
         """
-        n         = SWING_LOOKBACK
-        last_i    = len(df) - 1
-        row       = df.iloc[last_i]
-        min_body  = row['atr'] * MIN_OB_BODY_MULT
+        last_i   = len(df) - 1
+        row      = df.iloc[last_i]
+
+        ids_before = {id(ob) for ob in self.active_obs}
         self._process_bar(df, last_i)
-        # Return OBs touched by the latest bar
+
+        # OBs that didn't exist before this bar
+        new_obs = [ob for ob in self.active_obs if id(ob) not in ids_before]
+
+        # OBs whose zone price is currently touching
         triggered = []
         for ob in self.active_obs:
             if ob['dir'] == 'bull' and row['bull_bias']:
@@ -76,7 +84,8 @@ class OBEngine:
             elif ob['dir'] == 'bear' and row['bear_bias']:
                 if row['high'] >= ob['ob_low'] and row['close'] <= ob['ob_high']:
                     triggered.append(ob)
-        return triggered
+
+        return triggered, new_obs
 
     def _process_bar(self, df: pd.DataFrame, last_i: int):
         """Core per-bar logic — updates swings, BOS and OB list."""

@@ -2,6 +2,8 @@
 #  DATA — Fetch 1H candles from Binance Demo Futures
 # ═══════════════════════════════════════════════════════════════
 
+from __future__ import annotations
+import time
 import pandas as pd
 import numpy as np
 from binance.um_futures import UMFutures
@@ -25,15 +27,21 @@ def fetch_candles(client=None) -> pd.DataFrame:
         'taker_buy_quote', 'ignore'
     ])
 
-    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+    df['open_time']  = pd.to_datetime(df['open_time'], unit='ms')
+    df['close_time'] = pd.to_numeric(df['close_time'])
     df.set_index('open_time', inplace=True)
     df.index.name = 'datetime'
 
     for col in ['open', 'high', 'low', 'close', 'volume']:
         df[col] = pd.to_numeric(df[col])
 
-    # Drop the last (still-forming) candle — only trade on closed candles
-    df = df.iloc[:-1]
+    # Drop the last candle only if it is still forming.
+    # Checking close_time avoids the boundary bug where the new candle hasn't
+    # appeared in the API response yet and we accidentally drop the last
+    # closed candle instead.
+    now_ms = int(time.time() * 1000)
+    if df['close_time'].iloc[-1] > now_ms:
+        df = df.iloc[:-1]
 
     return df[['open', 'high', 'low', 'close', 'volume']]
 

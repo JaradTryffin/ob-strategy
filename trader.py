@@ -17,26 +17,37 @@ def set_leverage(client: UMFutures):
         log_message(f"[WARN] Could not set leverage: {e}")
 
 
-def open_position(client: UMFutures, direction: str, quantity: float,
-                  entry: float, sl: float, tp: float) -> dict | None:
+def place_limit_order(client: UMFutures, direction: str, quantity: float,
+                      entry: float, sl: float, tp: float):
     """
-    Open a market order and attach SL + TP as separate orders.
-    direction: 'long' or 'short'
+    Place a pending limit order at the OB level.
+    Returns the Binance orderId (int) or None on failure.
     """
-    side       = 'BUY'  if direction == 'long'  else 'SELL'
-    close_side = 'SELL' if direction == 'long'  else 'BUY'
-
+    side = 'BUY' if direction == 'long' else 'SELL'
     try:
-        # ── Market entry ─────────────────────────────────────
         order = client.new_order(
-            symbol   = SYMBOL,
-            side     = side,
-            type     = 'MARKET',
-            quantity = quantity,
+            symbol      = SYMBOL,
+            side        = side,
+            type        = 'LIMIT',
+            price       = round(entry, 2),
+            quantity    = quantity,
+            timeInForce = 'GTC',
         )
-        log_message(f"[ENTRY] {direction.upper()} {quantity} BTC @ ~{entry:.2f} | SL: {sl:.2f} | TP: {tp:.2f}")
+        log_message(f"[PENDING] {direction.upper()} limit @ {entry:.2f} | "
+                    f"SL: {sl:.2f} | TP: {tp:.2f} | Qty: {quantity} | "
+                    f"OrderId: {order['orderId']}")
+        return order['orderId']
+    except ClientError as e:
+        log_message(f"[ERROR] Failed to place limit order: {e}")
+        return None
 
-        # ── Stop Loss ─────────────────────────────────────────
+
+def attach_sl_tp(client: UMFutures, direction: str, sl: float, tp: float):
+    """
+    Place SL and TP orders after a limit entry has been filled.
+    """
+    close_side = 'SELL' if direction == 'long' else 'BUY'
+    try:
         client.new_order(
             symbol        = SYMBOL,
             side          = close_side,
@@ -44,8 +55,6 @@ def open_position(client: UMFutures, direction: str, quantity: float,
             stopPrice     = round(sl, 2),
             closePosition = 'true',
         )
-
-        # ── Take Profit ───────────────────────────────────────
         client.new_order(
             symbol        = SYMBOL,
             side          = close_side,
@@ -53,20 +62,18 @@ def open_position(client: UMFutures, direction: str, quantity: float,
             stopPrice     = round(tp, 2),
             closePosition = 'true',
         )
-
-        return {
-            'dir'      : direction,
-            'entry'    : entry,
-            'sl'       : sl,
-            'tp'       : tp,
-            'sl_dist'  : abs(entry - sl),
-            'quantity' : quantity,
-            'be'       : False,
-        }
-
+        log_message(f"[SL/TP] Attached — SL: {sl:.2f} | TP: {tp:.2f}")
     except ClientError as e:
-        log_message(f"[ERROR] Failed to open position: {e}")
-        return None
+        log_message(f"[ERROR] Failed to attach SL/TP: {e}")
+
+
+def cancel_order(client: UMFutures, order_id: int):
+    """Cancel a single order by ID."""
+    try:
+        client.cancel_order(symbol=SYMBOL, orderId=order_id)
+        log_message(f"[CANCEL] Order {order_id} cancelled")
+    except ClientError as e:
+        log_message(f"[WARN] Could not cancel order {order_id}: {e}")
 
 
 def manage_position(client: UMFutures, position: dict, current_price: float,
