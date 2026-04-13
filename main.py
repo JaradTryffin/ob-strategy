@@ -54,10 +54,12 @@ def build_ob_params(ob: dict, atr: float, balance: float, risk_mgr) -> dict:
 
 
 def place_pending(client, ob: dict, atr: float, balance: float, risk_mgr,
-                  existing_order_ids: set,
-                  pending_orders: dict) -> bool:
+                  existing_order_ids: set, pending_orders: dict,
+                  current_price: float) -> bool:
     """
     Place a limit order for an OB if one isn't already live on Binance.
+    Skips if price has already passed through the entry level (would fill
+    immediately at the wrong price, making SL/TP invalid).
     Stores order_id on the OB dict and params in pending_orders.
     Returns True if an order was placed.
     """
@@ -70,12 +72,24 @@ def place_pending(client, ob: dict, atr: float, balance: float, risk_mgr,
         log_message(f"  [SKIP OB] SL distance too tight (${p['sl_dist']:.2f})")
         return False
 
+    # Proximity check — don't place if price already blew past the entry.
+    # A LONG limit at ob_high needs price to be ABOVE ob_high (coming back down).
+    # A SHORT limit at ob_low needs price to be BELOW ob_low (coming back up).
+    if p['direction'] == 'long' and current_price < p['entry']:
+        log_message(f"  [SKIP OB] Price ${current_price:.2f} already below LONG entry "
+                    f"${p['entry']:.2f} — limit would fill immediately at wrong price")
+        return False
+    if p['direction'] == 'short' and current_price > p['entry']:
+        log_message(f"  [SKIP OB] Price ${current_price:.2f} already above SHORT entry "
+                    f"${p['entry']:.2f} — limit would fill immediately at wrong price")
+        return False
+
     order_id = place_limit_order(
         client, p['direction'], p['quantity'],
         p['entry'], p['sl'], p['tp'],
     )
     if order_id:
-        ob['order_id']          = order_id
+        ob['order_id']           = order_id
         pending_orders[order_id] = p      # survives OB removal from active_obs
         return True
     return False
@@ -121,11 +135,12 @@ def run():
     existing_order_ids = get_open_order_ids(client)
     last_row           = df_init.iloc[-1]
 
+    warmup_price = float(df_init.iloc[-1]['close'])
     if ob_eng.active_obs and risk_mgr.can_trade(balance, MAX_TRADES_DAY):
         log_message(f"  Placing pending limits for {len(ob_eng.active_obs)} warmup OBs...")
         for ob in ob_eng.active_obs:
             place_pending(client, ob, last_row['atr'], balance, risk_mgr,
-                          existing_order_ids, pending_orders)
+                          existing_order_ids, pending_orders, warmup_price)
 
     # Active position tracked locally for BE/trail management
     local_position = None
@@ -192,7 +207,7 @@ def run():
                     log_message(f"  [NEW OB] {ob['dir'].upper()} OB formed | "
                                 f"Zone: {ob['ob_low']:.2f} – {ob['ob_high']:.2f}")
                     place_pending(client, ob, atr, balance, risk_mgr,
-                                  existing_order_ids, pending_orders)
+                                  existing_order_ids, pending_orders, price)
                 existing_order_ids = get_open_order_ids(client)
 
             # ── 7. Check if a pending limit just filled ────────
@@ -211,13 +226,26 @@ def run():
                 if filled_params is not None:
                     direction = filled_params['direction']
                     entry     = float(binance_pos['entry_price'])
+                    quantity  = float(binance_pos['size'])
                     sl        = filled_params['sl']
                     tp        = filled_params['tp']
-                    quantity  = float(binance_pos['size'])
+
+                    # Validate SL is on the correct side of the actual fill.
+                    # If fill price differs from OB level (e.g. immediate fill),
+                    # recalculate SL/TP from the actual entry price.
+                    sl_valid = (sl < entry if direction == 'long' else sl > entry)
+                    if not sl_valid:
+                        sl_dist = atr * 1.5
+                        sl = (entry - sl_dist if direction == 'long'
+                              else entry + sl_dist)
+                        tp = (entry + sl_dist * RR_RATIO if direction == 'long'
+                              else entry - sl_dist * RR_RATIO)
+                        log_message(f"  [WARN] SL was wrong side of fill — "
+                                    f"recalculated from entry: SL {sl:.2f} | TP {tp:.2f}")
 
                     log_message(f"  [FILLED] {direction.upper()} limit filled @ {entry:.2f}")
 
-                    attach_sl_tp(client, direction, sl, tp)
+                    attach_sl_tp(client, direction, sl, tp, quantity)
 
                     # Cancel all other pending limits
                     for other_id in list(pending_orders.keys()):

@@ -42,25 +42,29 @@ def place_limit_order(client: UMFutures, direction: str, quantity: float,
         return None
 
 
-def attach_sl_tp(client: UMFutures, direction: str, sl: float, tp: float):
+def attach_sl_tp(client: UMFutures, direction: str, sl: float, tp: float,
+                 quantity: float):
     """
     Place SL and TP orders after a limit entry has been filled.
+    Uses reduceOnly + quantity (works on Binance demo futures).
     """
     close_side = 'SELL' if direction == 'long' else 'BUY'
     try:
         client.new_order(
-            symbol        = SYMBOL,
-            side          = close_side,
-            type          = 'STOP_MARKET',
-            stopPrice     = round(sl, 2),
-            closePosition = 'true',
+            symbol      = SYMBOL,
+            side        = close_side,
+            type        = 'STOP_MARKET',
+            stopPrice   = round(sl, 2),
+            quantity    = quantity,
+            reduceOnly  = 'true',
         )
         client.new_order(
-            symbol        = SYMBOL,
-            side          = close_side,
-            type          = 'TAKE_PROFIT_MARKET',
-            stopPrice     = round(tp, 2),
-            closePosition = 'true',
+            symbol      = SYMBOL,
+            side        = close_side,
+            type        = 'TAKE_PROFIT_MARKET',
+            stopPrice   = round(tp, 2),
+            quantity    = quantity,
+            reduceOnly  = 'true',
         )
         log_message(f"[SL/TP] Attached — SL: {sl:.2f} | TP: {tp:.2f}")
     except ClientError as e:
@@ -143,11 +147,12 @@ def _replace_sl(client: UMFutures, direction: str, new_sl: float, position: dict
 
         # Place new SL
         client.new_order(
-            symbol        = SYMBOL,
-            side          = close_side,
-            type          = 'STOP_MARKET',
-            stopPrice     = round(new_sl, 2),
-            closePosition = 'true',
+            symbol     = SYMBOL,
+            side       = close_side,
+            type       = 'STOP_MARKET',
+            stopPrice  = round(new_sl, 2),
+            quantity   = position['quantity'],
+            reduceOnly = 'true',
         )
     except ClientError as e:
         log_message(f"[ERROR] Failed to replace SL: {e}")
