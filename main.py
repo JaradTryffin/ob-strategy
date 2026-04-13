@@ -29,22 +29,17 @@ from risk       import RiskManager
 from trader     import (set_leverage, place_limit_order, attach_sl_tp,
                         cancel_order, manage_position, close_all_orders)
 from logger     import log_message, log_trade
-from config     import (SYMBOL, MAX_TRADES_DAY, SESSION_START, SESSION_END,
-                        SL_BUFFER_MULT, RR_RATIO, INITIAL_CAPITAL)
+from config     import (SYMBOL, MAX_TRADES_DAY, SL_BUFFER_MULT, RR_RATIO)
 
 
 def seconds_until_next_candle() -> int:
-    """Returns seconds until the next 1H candle closes."""
     now     = datetime.now(timezone.utc)
     seconds = 3600 - (now.minute * 60 + now.second)
     return seconds
 
 
 def build_ob_params(ob: dict, atr: float, balance: float, risk_mgr) -> dict:
-    """
-    Derive entry / sl / tp / quantity from an OB dict.
-    Returns a dict ready to pass to place_limit_order.
-    """
+    """Derive entry / sl / tp / quantity from an OB dict."""
     direction = 'long' if ob['dir'] == 'bull' else 'short'
     entry     = ob['ob_high'] if direction == 'long' else ob['ob_low']
     sl_buffer = atr * SL_BUFFER_MULT
@@ -59,10 +54,12 @@ def build_ob_params(ob: dict, atr: float, balance: float, risk_mgr) -> dict:
 
 
 def place_pending(client, ob: dict, atr: float, balance: float, risk_mgr,
-                  existing_order_ids: set) -> bool:
+                  existing_order_ids: set,
+                  pending_orders: dict) -> bool:
     """
     Place a limit order for an OB if one isn't already live on Binance.
-    Stores the orderId on the OB dict.  Returns True if an order was placed.
+    Stores order_id on the OB dict and params in pending_orders.
+    Returns True if an order was placed.
     """
     if ob.get('order_id') and ob['order_id'] in existing_order_ids:
         return False   # already live
@@ -78,8 +75,8 @@ def place_pending(client, ob: dict, atr: float, balance: float, risk_mgr,
         p['entry'], p['sl'], p['tp'],
     )
     if order_id:
-        ob['order_id'] = order_id
-        ob['params']   = p      # store for later when we need to attach SL/TP
+        ob['order_id']          = order_id
+        pending_orders[order_id] = p      # survives OB removal from active_obs
         return True
     return False
 
@@ -113,16 +110,22 @@ def run():
     ob_eng.warmup(df_init)
     log_message(f"  Warm-up complete — {len(ob_eng.active_obs)} active OBs loaded")
 
+    # pending_orders: {order_id: params}
+    # Tracks all live limit orders independently of OB lifecycle.
+    # An OB can be removed from active_obs (mitigated/expired) but its
+    # order stays here until explicitly cancelled or filled.
+    pending_orders: dict = {}
+
     # ── Place pending limits for all OBs found in warmup ──────
-    balance           = get_account_balance(client)
+    balance            = get_account_balance(client)
     existing_order_ids = get_open_order_ids(client)
-    last_row          = df_init.iloc[-1]
+    last_row           = df_init.iloc[-1]
 
     if ob_eng.active_obs and risk_mgr.can_trade(balance, MAX_TRADES_DAY):
         log_message(f"  Placing pending limits for {len(ob_eng.active_obs)} warmup OBs...")
         for ob in ob_eng.active_obs:
             place_pending(client, ob, last_row['atr'], balance, risk_mgr,
-                          existing_order_ids)
+                          existing_order_ids, pending_orders)
 
     # Active position tracked locally for BE/trail management
     local_position = None
@@ -153,7 +156,6 @@ def run():
 
             # ── 3. Sync local position with Binance ───────────
             if binance_pos is None and local_position is not None:
-                # Position closed by SL or TP on exchange
                 pnl = (price - local_position['entry']) if local_position['dir'] == 'long' \
                       else (local_position['entry'] - price)
                 log_trade({
@@ -177,57 +179,51 @@ def run():
                 local_position = manage_position(
                     client, local_position, price, atr, bar_high, bar_low)
 
-            # ── 5. Update OB engine — get new + triggered OBs ─
-            # Snapshot before update so we can detect removed OBs
-            obs_before   = {id(ob): ob for ob in ob_eng.active_obs}
-            _, new_obs   = ob_eng.update(df)
+            # ── 5. Update OB engine ───────────────────────────
+            obs_before    = {id(ob): ob for ob in ob_eng.active_obs}
+            _, new_obs    = ob_eng.update(df)
             obs_after_ids = {id(ob) for ob in ob_eng.active_obs}
-            removed_obs  = [ob for oid, ob in obs_before.items()
-                            if oid not in obs_after_ids]
+            removed_obs   = [ob for oid, ob in obs_before.items()
+                             if oid not in obs_after_ids]
 
-            # ── 6. Place limits for any newly created OBs ─────
+            # ── 6. Place limits for newly created OBs ─────────
             if new_obs and risk_mgr.can_trade(balance, MAX_TRADES_DAY):
                 for ob in new_obs:
                     log_message(f"  [NEW OB] {ob['dir'].upper()} OB formed | "
                                 f"Zone: {ob['ob_low']:.2f} – {ob['ob_high']:.2f}")
                     place_pending(client, ob, atr, balance, risk_mgr,
-                                  existing_order_ids)
-                # Refresh open orders after placing
+                                  existing_order_ids, pending_orders)
                 existing_order_ids = get_open_order_ids(client)
 
             # ── 7. Check if a pending limit just filled ────────
+            # Uses pending_orders (not active_obs) so a fill is detected
+            # even if the OB was already removed due to mitigation.
             if local_position is None and binance_pos is not None:
-                # Find which OB's limit was filled
-                filled_ob = None
-                for ob in ob_eng.active_obs:
-                    oid = ob.get('order_id')
-                    if oid and oid not in existing_order_ids:
-                        # Order is gone from open orders — it filled
-                        filled_ob = ob
+                filled_order_id = None
+                filled_params   = None
+
+                for order_id, params in list(pending_orders.items()):
+                    if order_id not in existing_order_ids:
+                        filled_order_id = order_id
+                        filled_params   = params
                         break
 
-                if filled_ob is not None:
-                    p = filled_ob.get('params', {})
-                    direction = p.get('direction', binance_pos['side'])
+                if filled_params is not None:
+                    direction = filled_params['direction']
                     entry     = float(binance_pos['entry_price'])
-                    sl        = p.get('sl', 0)
-                    tp        = p.get('tp', 0)
+                    sl        = filled_params['sl']
+                    tp        = filled_params['tp']
                     quantity  = float(binance_pos['size'])
 
                     log_message(f"  [FILLED] {direction.upper()} limit filled @ {entry:.2f}")
 
-                    # Attach SL + TP now that we have a real position
                     attach_sl_tp(client, direction, sl, tp)
 
                     # Cancel all other pending limits
-                    for ob in ob_eng.active_obs:
-                        oid = ob.get('order_id')
-                        if oid and oid != filled_ob['order_id'] \
-                                and oid in existing_order_ids:
-                            cancel_order(client, oid)
-                            ob.pop('order_id', None)
-
-                    ob_eng.mark_mitigated(filled_ob)
+                    for other_id in list(pending_orders.keys()):
+                        if other_id != filled_order_id and other_id in existing_order_ids:
+                            cancel_order(client, other_id)
+                    pending_orders.clear()
 
                     if in_sess:
                         risk_mgr.trades_today += 1
@@ -246,8 +242,10 @@ def run():
             # ── 8. Cancel limits for removed (expired/mitigated) OBs ─
             for ob in removed_obs:
                 oid = ob.get('order_id')
-                if oid and oid in existing_order_ids:
-                    cancel_order(client, oid)
+                if oid:
+                    if oid in existing_order_ids:
+                        cancel_order(client, oid)
+                    pending_orders.pop(oid, None)
 
             # ── 9. Sleep until next candle close ──────────────
             wait = seconds_until_next_candle()
