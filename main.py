@@ -178,7 +178,12 @@ def run():
                     client, local_position, price, atr, bar_high, bar_low)
 
             # ── 5. Update OB engine — get new + triggered OBs ─
-            _, new_obs = ob_eng.update(df)
+            # Snapshot before update so we can detect removed OBs
+            obs_before   = {id(ob): ob for ob in ob_eng.active_obs}
+            _, new_obs   = ob_eng.update(df)
+            obs_after_ids = {id(ob) for ob in ob_eng.active_obs}
+            removed_obs  = [ob for oid, ob in obs_before.items()
+                            if oid not in obs_after_ids]
 
             # ── 6. Place limits for any newly created OBs ─────
             if new_obs and risk_mgr.can_trade(balance, MAX_TRADES_DAY):
@@ -238,10 +243,8 @@ def run():
                         'entry_time' : now_utc.isoformat(),
                     }
 
-            # ── 8. Cancel limits for expired / mitigated OBs ──
-            obs_to_expire = [ob for ob in ob_eng.active_obs
-                             if ob.get('mitigated') or ob.get('age', 0) >= 80]
-            for ob in obs_to_expire:
+            # ── 8. Cancel limits for removed (expired/mitigated) OBs ─
+            for ob in removed_obs:
                 oid = ob.get('order_id')
                 if oid and oid in existing_order_ids:
                     cancel_order(client, oid)
