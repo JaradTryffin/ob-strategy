@@ -82,13 +82,21 @@ def bars_to_df(bars: list[dict]) -> pd.DataFrame:
 
 
 def get_account_balance() -> float:
-    """Return available USDT wallet balance."""
+    """Return available USDT wallet balance.
+
+    Bybit returns availableToWithdraw as '' when margin is locked (open position).
+    Fall back to walletBalance so the bot keeps running during open trades.
+    """
     client = get_http_client()
     resp   = client.get_wallet_balance(accountType="UNIFIED", coin="USDT")
     coins  = resp["result"]["list"][0]["coin"]
     for c in coins:
         if c["coin"] == "USDT":
-            return float(c["availableToWithdraw"])
+            atw = c.get("availableToWithdraw", "")
+            wb  = c.get("walletBalance", "0")
+            # Use walletBalance when availableToWithdraw is empty (position open)
+            val = atw if atw not in ("", None) else wb
+            return float(val) if val not in ("", None) else 0.0
     return 0.0
 
 
