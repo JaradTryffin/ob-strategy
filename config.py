@@ -1,22 +1,24 @@
 # ═══════════════════════════════════════════════════════════════
 #  OB TRADING BOT — CONFIG
 #  Strategy: Structure + Order Block (Smart Money)
-#  Instrument: BTCUSDT Perpetual Futures (Binance Demo)
+#  Instrument: BTCUSDT Perpetual Futures (Bybit)
 # ═══════════════════════════════════════════════════════════════
 
-# ── Binance Demo API ──────────────────────────────────────────
 import os
 from dotenv import load_dotenv
 load_dotenv()
 
-API_KEY    = os.getenv("BINANCE_API_KEY")
-API_SECRET = os.getenv("BINANCE_API_SECRET")
-BASE_URL   = "https://demo-fapi.binance.com"        # Binance demo futures endpoint
+# ── Bybit API ─────────────────────────────────────────────────
+# DEMO=true  → api-demo.bybit.com (paper trading, real market data)
+# DEMO=false → api.bybit.com      (live)
+API_KEY    = os.getenv("BYBIT_API_KEY", "")
+API_SECRET = os.getenv("BYBIT_API_SECRET", "")
+DEMO: bool = os.getenv("DEMO", "true").lower() == "true"
 
 # ── Instrument ────────────────────────────────────────────────
 SYMBOL     = "BTCUSDT"
-TIMEFRAME  = "1h"
-LEVERAGE   = 1              # keep at 1x for now — risk is managed via position sizing
+TIMEFRAME  = "60"          # Bybit interval in minutes (60 = 1H)
+LEVERAGE   = 1
 
 # ── Strategy — Structure ──────────────────────────────────────
 SWING_LOOKBACK    = 5       # bars each side to confirm a swing high/low
@@ -31,21 +33,20 @@ RR_RATIO          = 3.0     # 1:3 risk/reward
 SL_BUFFER_MULT    = 0.15    # ATR fraction added beyond OB wick for SL
 
 # ── Session (UTC) ─────────────────────────────────────────────
-# Matches BTC backtest: 9:00-16:00 EST = 14:00-21:00 UTC
-SESSION_START     = 14      # 14:00 UTC (09:00 EST — NYSE open)
-SESSION_END       = 21      # 21:00 UTC (16:00 EST — NYSE close)
+# 9:00-16:00 EST = 14:00-21:00 UTC
+SESSION_START     = 14
+SESSION_END       = 21
 
 # ── Risk Management ───────────────────────────────────────────
-INITIAL_CAPITAL   = 10_000  # your demo account starting balance (update if different)
-RISK_PCT          = 0.75    # % of account risked per trade (matched to backtest)
-MAX_TRADES_DAY    = 2       # max entries per day
-BREAKEVEN_AT_1R   = True    # move SL to breakeven after 1R profit
-TRAILING_AFTER_BE = True    # trail stop after breakeven
-TRAILING_ATR_MULT = 1.5     # ATR multiplier for trailing stop
+INITIAL_CAPITAL   = 10_000
+RISK_PCT          = 0.75    # % of account risked per trade
+MAX_TRADES_DAY    = 2
+BREAKEVEN_AT_1R   = True
+TRAILING_AFTER_BE = True
+TRAILING_ATR_MULT = 1.5
 
-# ── FTMO Daily Loss Guard ─────────────────────────────────────
-# Bot will stop trading for the day if daily loss exceeds this
-DAILY_LOSS_LIMIT_PCT = 3.0  # 3% self-imposed (FTMO limit is 5% — buffer for safety)
+# ── Daily Loss Guard ──────────────────────────────────────────
+DAILY_LOSS_LIMIT_PCT = 3.0
 
 # ── Candle History ────────────────────────────────────────────
-CANDLES_NEEDED    = 300     # how many 1H candles to fetch for indicator calculation
+CANDLES_NEEDED    = 300     # 1H candles for indicator warmup
